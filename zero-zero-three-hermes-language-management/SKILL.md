@@ -42,7 +42,20 @@ python scripts/run_localization_pipeline.py . \
 
 The pipeline creates scan, delta, patch-plan, i18n migration, translation-request, consistency, and summary artifacts. It does not rewrite source code. Add `--surfaces tui web cli` for a focused pass. Add `--autofix-locales` to plan missing locale-key fixes. Add `--apply --autofix-locales` only after confirming deterministic locale key additions are desired.
 
-Use the generated `localization-work/translation-request.json` as the model-facing translation batch, then review and apply returned translations through the existing patch or migration plan.
+The pipeline also writes:
+
+- `localization-work/status.json`: current phase and latest message.
+- `localization-work/progress.log`: append-only timeline.
+- `localization-work/DONE.md` or `FAILED.md`: completion marker.
+- `localization-work/batches/status.json`: translation batch status.
+
+Check progress without interrupting the agent:
+
+```bash
+python scripts/localization_status.py --work-dir localization-work
+```
+
+Do not read or delegate the full `translation-request.json` when it has more than 100 items. Use the generated `localization-work/batches/batch-XXX.request.json` files. Default batches are capped at 40 items and approximately 12k JSON characters to avoid model output truncation.
 
 ## Adaptive Update Mode
 
@@ -226,6 +239,40 @@ python scripts/export_translation_request.py \
 
 The request JSON includes source text, file context, risk, action, preserve tokens, and response schema. Ask the model to return JSON only, then verify placeholders before applying the translations.
 
+For large requests, split before translating:
+
+```bash
+python scripts/split_translation_request.py \
+  --input localization-work/translation-request.json \
+  --out-dir localization-work/batches \
+  --batch-size 40 \
+  --max-chars 12000 \
+  --overwrite
+python scripts/localization_status.py --work-dir localization-work
+```
+
+Translate one batch at a time or at most three small batches concurrently. Never delegate 400-item batches; that risks truncated model output and exhausted iteration budgets.
+
+After a batch result is written, validate it:
+
+```bash
+python scripts/validate_translation_response.py \
+  --request localization-work/batches/batch-000.request.json \
+  --response localization-work/batches/batch-000.result.json \
+  --out localization-work/batches/batch-000.validation.json \
+  --fail-on errors
+```
+
+Merge completed batches:
+
+```bash
+python scripts/merge_translation_results.py \
+  --batches-dir localization-work/batches \
+  --out localization-work/merged-translation-results.json \
+  --require-validation \
+  --update-status
+```
+
 ## i18n Key Migration Mode
 
 Use this mode when the user wants durable language switching instead of one-off hardcoded replacements.
@@ -312,6 +359,10 @@ When updating an existing baseline, pass `--baseline localization-baseline.json`
 - `scripts/generate_i18n_migration_plan.py`: converts scan, delta, or patch-plan artifacts into stable i18n key migration work items.
 - `scripts/export_translation_request.py`: exports patch or migration plans as model-facing translation batches.
 - `scripts/run_localization_pipeline.py`: runs the scan, delta, plan, migration, translation-request, consistency, and summary artifact pipeline.
+- `scripts/split_translation_request.py`: splits large translation requests into resumable small batch files.
+- `scripts/localization_status.py`: prints pipeline and translation batch progress.
+- `scripts/validate_translation_response.py`: validates batch translations for JSON shape, missing ids, placeholders, and preserve tokens.
+- `scripts/merge_translation_results.py`: merges validated batch results into one translation result artifact.
 - `scripts/check_i18n_consistency.py`: checks locale files for missing keys, extra keys, placeholder mismatches, empty values, and likely untranslated text.
 - `scripts/apply_locale_consistency_fixes.py`: plans or applies deterministic locale missing-key and empty-value fixes.
 - `scripts/update_localization_baseline.py`: creates or refreshes a stable localization baseline.

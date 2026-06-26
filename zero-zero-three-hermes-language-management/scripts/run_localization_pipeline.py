@@ -43,6 +43,11 @@ def run_step(name: str, command: list[str], cwd: Path) -> dict[str, Any]:
     }
 
 
+def write_json(path: Path, data: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
 def require_ok(step: dict[str, Any]) -> None:
     if step["returncode"] != 0:
         cmd = " ".join(step["command"])
@@ -130,6 +135,9 @@ def main() -> int:
     parser.add_argument("--autofix-locales", action="store_true", help="Plan deterministic locale missing-key fixes.")
     parser.add_argument("--apply", action="store_true", help="Apply deterministic locale fixes when used with --autofix-locales.")
     parser.add_argument("--fail-fast", action="store_true", help="Stop immediately when a sub-step fails.")
+    parser.add_argument("--translation-batch-size", type=int, default=40, help="Maximum translation-request items per batch")
+    parser.add_argument("--translation-batch-max-chars", type=int, default=12000, help="Approximate maximum JSON chars per translation batch")
+    parser.add_argument("--no-translation-batches", action="store_true", help="Do not split translation-request.json into batches")
     args = parser.parse_args()
 
     repo = args.repo.resolve()
@@ -155,15 +163,64 @@ def main() -> int:
     translation_request_md = out_dir / "translation-request.md"
     pipeline_json = out_dir / "pipeline-report.json"
     pipeline_md = out_dir / "pipeline-report.md"
+    status_json = out_dir / "status.json"
+    progress_log = out_dir / "progress.log"
+    done_md = out_dir / "DONE.md"
+    failed_md = out_dir / "FAILED.md"
+    batches_dir = out_dir / "batches"
 
     steps: list[dict[str, Any]] = []
+    artifacts: dict[str, str | None] = {}
+    counts: dict[str, int | None] = {}
+
+    def update_status(state: str, phase: str, message: str, step: str | None = None) -> None:
+        payload = {
+            "schema": "zero-zero-three.localization-pipeline-status",
+            "state": state,
+            "phase": phase,
+            "step": step,
+            "message": message,
+            "repo": str(repo),
+            "target_locale": args.target_locale,
+            "mode": args.mode,
+            "out_dir": str(out_dir),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "artifacts": artifacts,
+            "counts": counts,
+            "steps": [
+                {"name": item["name"], "returncode": item["returncode"], "started_at": item["started_at"]}
+                for item in steps
+            ],
+        }
+        write_json(status_json, payload)
+        with progress_log.open("a", encoding="utf-8") as handle:
+            handle.write(f"{payload['updated_at']} {state} {phase} {message}\n")
 
     def call(name: str, command: list[str]) -> dict[str, Any]:
+        print(f"[{len(steps) + 1}] {name} started", flush=True)
+        update_status("running", name, f"{name} started", name)
         step = run_step(name, command, repo)
         steps.append(step)
+        if step["returncode"] == 0:
+            print(f"[{len(steps)}] {name} completed", flush=True)
+            update_status("running", name, f"{name} completed", name)
+        else:
+            print(f"[{len(steps)}] {name} failed ({step['returncode']})", flush=True)
+            update_status("failed", name, f"{name} failed with return code {step['returncode']}", name)
+            failed_md.write_text(
+                f"# Localization Pipeline Failed\n\nStep `{name}` failed with return code `{step['returncode']}`.\n\n",
+                encoding="utf-8",
+            )
         if args.fail_fast:
             require_ok(step)
         return step
+
+    progress_log.write_text("", encoding="utf-8")
+    if done_md.exists():
+        done_md.unlink()
+    if failed_md.exists():
+        failed_md.unlink()
+    update_status("running", "init", "pipeline initialized", "init")
 
     scan_base = [
         sys.executable,
@@ -184,7 +241,10 @@ def main() -> int:
         scan_base.append("--include-docs")
 
     require_ok(call("scan-json", [*scan_base, "--format", "json", "--out", str(scan_json)]))
+    counts["scan_candidates"] = maybe_count(scan_json)
+    artifacts["scan_json"] = str(scan_json)
     require_ok(call("scan-markdown", [*scan_base, "--format", "markdown", "--out", str(scan_md)]))
+    artifacts["scan_markdown"] = str(scan_md)
 
     baseline = args.baseline if args.baseline.is_absolute() else repo / args.baseline
     plan_input = scan_json
@@ -207,6 +267,7 @@ def main() -> int:
             )
         )
         plan_input = delta_json
+        artifacts["delta_json"] = str(delta_json)
 
     patch_cmd = [
         sys.executable,
@@ -225,6 +286,8 @@ def main() -> int:
     if memory.exists():
         patch_cmd.extend(["--translation-memory", str(memory)])
     require_ok(call("patch-plan", patch_cmd))
+    artifacts["patch_plan_json"] = str(patch_plan_json)
+    counts["patch_plan_items"] = maybe_count(patch_plan_json)
 
     translation_source = patch_plan_json
     if args.mode in {"i18n-key-migration", "both"}:
@@ -248,6 +311,8 @@ def main() -> int:
             migration_cmd.extend(["--translation-memory", str(memory)])
         require_ok(call("i18n-migration-plan", migration_cmd))
         translation_source = migration_json
+        artifacts["i18n_migration_plan_json"] = str(migration_json)
+        counts["migration_items"] = maybe_count(migration_json)
 
     glossary = locale_glossary(skill_root, args.target_locale)
     request_cmd = [
@@ -267,6 +332,27 @@ def main() -> int:
     if glossary:
         request_cmd.extend(["--glossary", str(glossary)])
     require_ok(call("translation-request", request_cmd))
+    artifacts["translation_request_json"] = str(translation_request_json)
+    counts["translation_request_items"] = maybe_count(translation_request_json, "items")
+
+    if not args.no_translation_batches:
+        split_cmd = [
+            sys.executable,
+            str(skill_scripts / "split_translation_request.py"),
+            "--input",
+            str(translation_request_json),
+            "--out-dir",
+            str(batches_dir),
+            "--batch-size",
+            str(args.translation_batch_size),
+            "--max-chars",
+            str(args.translation_batch_max_chars),
+            "--overwrite",
+        ]
+        require_ok(call("translation-batches", split_cmd))
+        artifacts["translation_batches_status"] = str(batches_dir / "status.json")
+        batch_status = load_json(batches_dir / "status.json")
+        counts["translation_batch_count"] = int(batch_status.get("batch_count", 0)) if isinstance(batch_status, dict) else None
 
     locales_dir = args.locales_dir if args.locales_dir.is_absolute() else repo / args.locales_dir
     if locales_dir.exists() and not args.skip_consistency:
@@ -287,6 +373,7 @@ def main() -> int:
                 ],
             )
         )
+        artifacts["consistency_json"] = str(consistency_json)
         require_ok(
             call(
                 "i18n-consistency-markdown",
@@ -322,6 +409,7 @@ def main() -> int:
             if args.apply:
                 fix_cmd.append("--apply")
             require_ok(call("locale-consistency-fixes", fix_cmd))
+            artifacts["locale_fix_json"] = str(locale_fix_json)
 
     report = {
         "schema": "zero-zero-three.localization-pipeline-report",
@@ -338,6 +426,7 @@ def main() -> int:
             "patch_plan_json": str(patch_plan_json),
             "i18n_migration_plan_json": str(migration_json) if migration_json.exists() else None,
             "translation_request_json": str(translation_request_json),
+            "translation_batches_status": str(batches_dir / "status.json") if (batches_dir / "status.json").exists() else None,
             "consistency_json": str(consistency_json) if consistency_json.exists() else None,
             "locale_fix_json": str(locale_fix_json) if locale_fix_json.exists() else None,
         },
@@ -346,12 +435,28 @@ def main() -> int:
             "patch_plan_items": maybe_count(patch_plan_json),
             "migration_items": maybe_count(migration_json),
             "translation_request_items": maybe_count(translation_request_json, "items"),
+            "translation_batch_count": counts.get("translation_batch_count"),
         },
         "steps": steps,
     }
     pipeline_json.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     write_summary(pipeline_md, report)
+    done_md.write_text(
+        "\n".join(
+            [
+                "# Localization Pipeline Complete",
+                "",
+                f"- Report: `{pipeline_md}`",
+                f"- Status: `{status_json}`",
+                f"- Translation batches: `{batches_dir}`" if (batches_dir / "status.json").exists() else "- Translation batches: not generated",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    update_status("complete", "done", "pipeline completed", "done")
     print(f"Pipeline report: {pipeline_md}")
+    print(f"Status: {status_json}")
     return 0
 
 

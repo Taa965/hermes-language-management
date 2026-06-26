@@ -92,6 +92,7 @@ def build_request(
             "Use natural, concise product UI language for the target locale.",
             "Keep protected tokens and placeholders unchanged.",
             "If an item is unsafe or model-facing, return skip=true with a short reason.",
+            "For large requests, split this file with split_translation_request.py before model translation.",
         ],
         "response_schema": {
             "translations": [

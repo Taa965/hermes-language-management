@@ -31,6 +31,13 @@
 
 ```bash
 git clone https://github.com/Taa965/zero-zero-three-hermes-language-management.git
+mkdir -p ~/.hermes/skills
+cp -R zero-zero-three-hermes-language-management/zero-zero-three-hermes-language-management ~/.hermes/skills/
+```
+
+如果你希望 Codex 也能发现它，可以再复制到：
+
+```bash
 mkdir -p ~/.agents/skills
 cp -R zero-zero-three-hermes-language-management/zero-zero-three-hermes-language-management ~/.agents/skills/
 ```
@@ -45,17 +52,46 @@ cp -R zero-zero-three-hermes-language-management/zero-zero-three-hermes-language
 ## 快速使用
 
 你在 Hermes 对话里可以这样用：
+
+```text
 使用 zero-zero-three-hermes-language-management，扫描当前 Hermes 项目所有用户可见英文，目标语言 zh-CN，先只生成报告和计划，不要改源码。
+```
 
 或者：
+
+```text
 使用 zero-zero-three-hermes-language-management，运行一键本地化 pipeline，目标语言中文，输出到 localization-work。
+```
 
 命令行直接用：
+
+```bash
 cd ~/.hermes/hermes-agent
 python ~/.hermes/skills/zero-zero-three-hermes-language-management/scripts/run_localization_pipeline.py . \
   --target-locale zh-CN \
   --mode both \
   --out-dir localization-work
+```
+
+常用输出：
+
+- `localization-work/localization-scan.json`
+- `localization-work/localization-patch-plan.json`
+- `localization-work/i18n-migration-plan.json`
+- `localization-work/translation-request.json`
+- `localization-work/batches/status.json`
+- `localization-work/status.json`
+- `localization-work/progress.log`
+- `localization-work/DONE.md`
+- `localization-work/i18n-consistency.json`
+- `localization-work/pipeline-report.md`
+
+查看进度：
+
+```bash
+python ~/.agents/skills/zero-zero-three-hermes-language-management/scripts/localization_status.py \
+  --work-dir localization-work
+```
 
 ## 多语言一致性检查
 
@@ -103,6 +139,27 @@ python ~/.agents/skills/zero-zero-three-hermes-language-management/scripts/expor
 ```
 
 返回的翻译结果必须再次校验占位符和保留 token，不能直接盲写。
+
+大请求不要直接交给模型。先拆成小批次：
+
+```bash
+python ~/.agents/skills/zero-zero-three-hermes-language-management/scripts/split_translation_request.py \
+  --input translation-request.json \
+  --out-dir localization-work/batches \
+  --batch-size 40 \
+  --max-chars 12000 \
+  --overwrite
+```
+
+每批返回后先校验：
+
+```bash
+python ~/.agents/skills/zero-zero-three-hermes-language-management/scripts/validate_translation_response.py \
+  --request localization-work/batches/batch-000.request.json \
+  --response localization-work/batches/batch-000.result.json \
+  --out localization-work/batches/batch-000.validation.json \
+  --fail-on errors
+```
 
 ## 安全边界
 

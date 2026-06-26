@@ -139,6 +139,9 @@ Use `run_localization_pipeline.py` when the user asks for an end-to-end update p
 
 - The pipeline is non-mutating by default.
 - It may write only artifact files under `--out-dir`.
+- It must write progress to `status.json`, `progress.log`, and `DONE.md` or `FAILED.md`.
 - It may apply deterministic locale fixes only with both `--autofix-locales` and `--apply`.
 - It must not rewrite source strings automatically from a model response without agent review.
-- Use `export_translation_request.py` to create model batches, then verify placeholder parity before applying returned translations.
+- Use `export_translation_request.py` to create the source request, then `split_translation_request.py` to create small model batches.
+- Never delegate large translation requests directly. Keep batches at 40 items or fewer unless the caller explicitly accepts truncation risk.
+- Validate every batch with `validate_translation_response.py` before merging or applying returned translations.

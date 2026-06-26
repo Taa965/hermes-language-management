@@ -77,6 +77,10 @@ def main() -> int:
         migration = tmp_path / "migration.json"
         migration_md = tmp_path / "migration.md"
         request = tmp_path / "translation-request.json"
+        batches_dir = tmp_path / "batches"
+        first_batch_result = batches_dir / "batch-000.result.json"
+        first_batch_validation = batches_dir / "batch-000.validation.json"
+        merged_results = tmp_path / "merged-results.json"
         consistency = tmp_path / "consistency.json"
         locale_fix = tmp_path / "locale-fix.json"
         pipeline_dir = tmp_path / "pipeline"
@@ -176,6 +180,72 @@ def main() -> int:
         run(
             [
                 sys.executable,
+                str(SCRIPTS / "split_translation_request.py"),
+                "--input",
+                str(request),
+                "--out-dir",
+                str(batches_dir),
+                "--batch-size",
+                "2",
+                "--max-chars",
+                "5000",
+            ]
+        )
+        batch_status = load_json(batches_dir / "status.json")
+        assert batch_status["batch_count"] >= 1
+        first_batch = load_json(batches_dir / "batch-000.request.json")
+        first_batch_result.write_text(
+            json.dumps(
+                {
+                    "translations": [
+                        {
+                            "id": item["id"],
+                            "translated_text": "翻译：" + item["source_text"],
+                            "skip": False,
+                            "reason": "",
+                        }
+                        for item in first_batch["items"]
+                    ]
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        run(
+            [
+                sys.executable,
+                str(SCRIPTS / "validate_translation_response.py"),
+                "--request",
+                str(batches_dir / "batch-000.request.json"),
+                "--response",
+                str(first_batch_result),
+                "--out",
+                str(first_batch_validation),
+                "--fail-on",
+                "errors",
+            ]
+        )
+        assert load_json(first_batch_validation)["status"] in {"pass", "warn"}
+        run(
+            [
+                sys.executable,
+                str(SCRIPTS / "merge_translation_results.py"),
+                "--batches-dir",
+                str(batches_dir),
+                "--out",
+                str(merged_results),
+                "--require-validation",
+                "--update-status",
+            ]
+        )
+        assert load_json(merged_results)["summary"]["translation_count"] >= 1
+        run([sys.executable, str(SCRIPTS / "localization_status.py"), "--work-dir", str(tmp_path), "--json"])
+
+        run(
+            [
+                sys.executable,
                 str(SCRIPTS / "check_i18n_consistency.py"),
                 "--locales-dir",
                 str(FIXTURE / "locales"),
@@ -220,6 +290,11 @@ def main() -> int:
         pipeline = load_json(pipeline_dir / "pipeline-report.json")
         assert pipeline["counts"]["scan_candidates"] >= 1
         assert pipeline["counts"]["translation_request_items"] >= 1
+        assert pipeline["counts"]["translation_batch_count"] >= 1
+        assert (pipeline_dir / "status.json").exists()
+        assert (pipeline_dir / "progress.log").exists()
+        assert (pipeline_dir / "DONE.md").exists()
+        assert (pipeline_dir / "batches" / "status.json").exists()
 
     print("smoke tests passed")
     return 0
