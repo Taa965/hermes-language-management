@@ -1,8 +1,6 @@
-# 零点零三 Hermes 语言管理
+# 零点零三 Hermes 语言管理（Hermes 汉化）
 
 `零点零三 Hermes 语言管理` 是一个面向 Hermes / Hermes fork 的本地化 skill。它帮助 agent 自动扫描用户可见文案、生成翻译计划、维护多语言 locale、一致性检查，并把硬编码文案迁移到稳定的 i18n key。
-
-当前建议作为 **Beta / v0.1.0** 使用。
 
 ## 功能
 
@@ -46,23 +44,18 @@ cp -R zero-zero-three-hermes-language-management/zero-zero-three-hermes-language
 
 ## 快速使用
 
-在 Hermes 项目根目录运行：
+你在 Hermes 对话里可以这样用：
+使用 zero-zero-three-hermes-language-management，扫描当前 Hermes 项目所有用户可见英文，目标语言 zh-CN，先只生成报告和计划，不要改源码。
 
-```bash
-python ~/.agents/skills/zero-zero-three-hermes-language-management/scripts/run_localization_pipeline.py . \
+或者：
+使用 zero-zero-three-hermes-language-management，运行一键本地化 pipeline，目标语言中文，输出到 localization-work。
+
+命令行直接用：
+cd ~/.hermes/hermes-agent
+python ~/.hermes/skills/zero-zero-three-hermes-language-management/scripts/run_localization_pipeline.py . \
   --target-locale zh-CN \
   --mode both \
   --out-dir localization-work
-```
-
-常用输出：
-
-- `localization-work/localization-scan.json`
-- `localization-work/localization-patch-plan.json`
-- `localization-work/i18n-migration-plan.json`
-- `localization-work/translation-request.json`
-- `localization-work/i18n-consistency.json`
-- `localization-work/pipeline-report.md`
 
 ## 多语言一致性检查
 
@@ -118,14 +111,3 @@ python ~/.agents/skills/zero-zero-three-hermes-language-management/scripts/expor
 - 不自动改源码中的硬编码字符串。
 - 不翻译模型提示词、skill 指令、命令、flags、URL、路径、provider/model/tool ID。
 - 不把真实密钥、私有 URL、用户数据写入 translation memory。
-
-## 发布前测试
-
-```bash
-python -m py_compile zero-zero-three-hermes-language-management/scripts/*.py
-python tests/smoke_test.py
-```
-
-## License
-
-MIT
