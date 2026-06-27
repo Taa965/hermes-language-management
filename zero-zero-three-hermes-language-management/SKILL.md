@@ -1,6 +1,6 @@
 ---
 name: zero-zero-three-hermes-language-management
-description: Hermes project localization workflow for automatically scanning, classifying, translating, patching, validating, consistency-checking, exporting model translation requests, autofixing locale-key gaps, and migrating user-visible language strings to i18n keys. Use when the user asks Hermes/Codex to localize Hermes or a Hermes-derived project into Chinese, Japanese, Korean, English, or another target language; to re-scan after upstream updates; to replace remaining English UI/CLI/TUI/Web strings; to check multilingual locale consistency; to run a one-command localization pipeline; or to maintain a localization map and i18n key migration plan for future language switching.
+description: Hermes localization workflow for deterministic shortcut parsing, scanning, translating, retrying translation batches, patching, validating, resuming interrupted work, generating rollback patches, showing progress, applying i18n key migrations, installing short aliases, reporting adaptive update deltas, and localizing other local skills' user-visible output text. Use when localizing Hermes or Hermes-derived projects into Chinese, Japanese, Korean, English, or another language; replacing remaining English UI/CLI/TUI/Web strings; localizing local skill output strings; checking i18n consistency; using shortcuts like /zero-zero-three-hermes-language-management, /语言, /lang, /技能语言, or /skill-lang, where bare shortcut invocations default to Simplified Chinese (zh-CN); or maintaining localization maps and i18n key migration plans.
 ---
 
 # 零点零三Hermes语言管理
@@ -9,9 +9,125 @@ description: Hermes project localization workflow for automatically scanning, cl
 
 Localize Hermes user-facing text to the requested language while preserving runtime identifiers and agent instructions. Execute the workflow end to end: scan, classify, export translation work, patch or migrate to i18n keys, validate, report, and maintain a baseline so future Hermes updates are handled incrementally.
 
+## Default Target Guard
+
+Default to `zh-CN` Simplified Chinese for every shortcut invocation unless the current user message contains an explicit target-language alias. This is a hard rule.
+
+Bare invocations with no target, including `/zero-zero-three-hermes-language-management`, `/语言`, `/lang`, `/技能语言`, `/skill-lang`, or the same commands followed only by mode/options such as `skills`, `skill`, `技能`, `本地skill`, `状态`, or `续跑`, must use `zh-CN`.
+
+Do not infer Japanese, Korean, English, or any other language from examples, previous conversation, previous runs, cached state, or skill metadata. Select `ja-JP` only when the current invocation explicitly contains `日文`, `日语`, `日本語`, `ja`, or `ja-JP`; apply the same current-message-only rule to every non-default language. If multiple explicit target aliases appear in the current invocation, use the last one.
+
+## Shortcut Command Protocol
+
+Treat slash/comma prompts as one-click execution requests, not planning or preview requests.
+
+Hermes uses `/` only to trigger the skill slash command. The language selector must be passed as the skill argument, separated from the skill name by whitespace.
+
+Format:
+
+```text
+/zero-zero-three-hermes-language-management
+/zero-zero-three-hermes-language-management <target> [option...]
+/zero-zero-three-hermes-language-management ，<target> [，option...]
+/语言 [target] [option...]
+/lang [target] [option...]
+/技能语言 [target] [option...]
+/skill-lang [target] [option...]
+```
+
+Inside the skill argument, accept either ASCII comma `,` or Chinese comma `，`, and trim spaces around each segment. Also trim trailing punctuation such as `;`, `；`, `.`, `。`, `:`, and `：`.
+
+Do not require a comma. A bare target like `中文` is valid. `中文` always means Simplified Chinese (`zh-CN`) unless the user explicitly says Traditional Chinese.
+
+If the skill is invoked with no target argument, follow Default Target Guard: use `zh-CN`, Simplified Chinese, and run the direct apply workflow. Do not ask the user for a language in the bare slash-command case.
+
+Avoid documenting `/zero-zero-three-hermes-language-management,中文` as the primary form because Hermes may parse the comma as part of the slash command name before the skill is loaded.
+
+Always resolve shortcut arguments with the deterministic parser before choosing locale, mode, or options:
+
+```bash
+python scripts/resolve_shortcut_command.py --command "/zero-zero-three-hermes-language-management" --json
+python scripts/resolve_shortcut_command.py --command "/语言 日文 续跑" --json
+python scripts/resolve_shortcut_command.py --command "/技能语言" --json
+```
+
+Use the parser output, not examples or prior context, as the source of truth for `target_locale`, `target_language`, `mode`, and shortcut options.
+
+Target aliases:
+
+- `汉化`, `中文`, `简体中文`, `zh`, `zh-CN`: `zh-CN`, Simplified Chinese.
+- `繁中`, `繁体中文`, `zh-Hant`: `zh-Hant`, Traditional Chinese.
+- `日文`, `日语`, `日本語`, `ja`, `ja-JP`: `ja-JP`, Japanese.
+- `韩文`, `韩语`, `한국어`, `ko`, `ko-KR`: `ko-KR`, Korean.
+- `英文`, `英语`, `English`, `en`, `en-US`: `en`, English.
+- For other language names, infer the closest locale and target-language name from the user text.
+
+Examples:
+
+```text
+/zero-zero-three-hermes-language-management
+/zero-zero-three-hermes-language-management 中文
+/zero-zero-three-hermes-language-management ，中文
+/语言
+/技能语言
+/zero-zero-three-hermes-language-management 日文
+/zero-zero-three-hermes-language-management ，繁体中文
+/语言 日文
+/lang ko
+/技能语言 日文
+/skill-lang ko
+```
+
+In these examples, bare commands select `zh-CN`; Japanese, Korean, Traditional Chinese, or English are selected only by explicit target aliases in that same command.
+
+Default behavior for a shortcut with only a target language: scan the current Hermes project, translate user-visible strings, validate translation batches, directly apply safe source-code changes, run validation, update the baseline, and report final results. Do not ask the user to approve a preview first.
+
+Shortcut options:
+
+- `只扫描`, `scan`, `dry-run`: generate artifacts only; do not write source files.
+- `续跑`, `resume`, `--resume`: continue from existing `localization-work` without overwriting completed translation batches.
+- `状态`, `status`: show the progress dashboard with `scripts/localization_status.py`.
+- `高风险也改`, `--allow-high-risk`: include high-risk translated items after validation.
+- `i18n`: prefer i18n key migration where the repository already has an i18n runtime.
+- `skills`, `skill`, `技能`, `本地skill`: switch to Local Skill Output Mode.
+
+Direct apply workflow for shortcut commands:
+
+1. Run `scripts/resolve_shortcut_command.py` on the current shortcut text. Use its `target_locale`, `target_language`, `mode`, `direct_apply`, `status_only`, and `options` fields as the source of truth.
+2. If `localization-work` exists without `DONE.md`, run the pipeline with `--resume`. Otherwise run a fresh pipeline.
+3. Run `scripts/run_localization_pipeline.py` from the current Hermes repo with `--mode both --out-dir localization-work`.
+4. Report progress with `scripts/localization_status.py --work-dir localization-work` after each major phase and use `--watch 30` during long batch work.
+5. Check `localization-work/version-update-report.md` to prioritize newly changed text after Hermes updates.
+6. Use `scripts/manage_translation_batches.py --batches-dir localization-work/batches --retry-failed --next 3` to select the next small batch fan-out. Translate only `next_batches`, at most three concurrently.
+7. After each batch result is written, rerun `manage_translation_batches.py`. It validates available results, updates progress, and creates smaller retry child batches for failed or truncated responses.
+8. Merge validated batches with `scripts/merge_translation_results.py`.
+9. Apply validated low and medium risk translations directly:
+
+```bash
+python scripts/apply_translation_results.py \
+  --repo . \
+  --request localization-work/translation-request.json \
+  --translations localization-work/merged-translation-results.json \
+  --out localization-work/apply-report.json \
+  --markdown localization-work/apply-report.md \
+  --rollback-patch localization-work/rollback.patch \
+  --apply \
+  --max-risk medium
+```
+
+Use `--max-risk high` only when the shortcut includes `高风险也改` or `--allow-high-risk`. Skip model-facing, ambiguous, generated, unmatched, or unsafe items and list them in the final report. The rollback patch can be checked or applied from the repo root with `git apply --check localization-work/rollback.patch` and `git apply localization-work/rollback.patch`.
+
+Install short aliases when the user asks for local deployment:
+
+```bash
+python scripts/install_hermes_language_aliases.py
+```
+
+This installs `/语言`, `/lang`, `/hermes-lang`, and `/hermes-language` for Hermes project localization. It also installs `/技能语言`, `/skill-lang`, `/skills-lang`, and `/skill-language` for Local Skill Output Mode.
+
 ## Quick Start
 
-1. Determine the target language from the user request. If missing, ask for it.
+1. Determine the target language from the user request or Shortcut Command Protocol. If the skill was invoked as bare `/zero-zero-three-hermes-language-management`, `/语言`, `/lang`, `/技能语言`, or `/skill-lang`, use `zh-CN` Simplified Chinese. If a non-shortcut natural-language request is missing a target language, ask for it.
 2. If the repository has `localization-baseline.json`, `docs/zh-localization-map.md`, or another localization map, read it before scanning.
 3. Run the scanner. Use JSON for automated patch planning and Markdown for human review:
 
@@ -31,7 +147,7 @@ python scripts/scan_user_facing_text.py <repo-root> --profile hermes --format ma
 
 ## One-Command Pipeline
 
-Use this mode when the user asks to handle a Hermes update end to end or wants a single command that produces all review artifacts.
+Use this mode when the user asks to handle a Hermes update end to end or wants a single command that produces review artifacts. Shortcut commands use this as the first phase before translation validation and direct application.
 
 ```bash
 python scripts/run_localization_pipeline.py . \
@@ -40,7 +156,7 @@ python scripts/run_localization_pipeline.py . \
   --out-dir localization-work
 ```
 
-The pipeline creates scan, delta, patch-plan, i18n migration, translation-request, consistency, and summary artifacts. It does not rewrite source code. Add `--surfaces tui web cli` for a focused pass. Add `--autofix-locales` to plan missing locale-key fixes. Add `--apply --autofix-locales` only after confirming deterministic locale key additions are desired.
+The pipeline creates scan, delta, patch-plan, i18n migration, translation-request, consistency, and summary artifacts. The pipeline itself does not rewrite source code except deterministic locale fixes when explicitly requested; direct shortcut commands continue by validating model translations and running `apply_translation_results.py --apply`. Add `--surfaces tui web cli` for a focused pass. Add `--autofix-locales` to plan missing locale-key fixes. Add `--apply --autofix-locales` only after confirming deterministic locale key additions are desired.
 
 The pipeline also writes:
 
@@ -48,14 +164,40 @@ The pipeline also writes:
 - `localization-work/progress.log`: append-only timeline.
 - `localization-work/DONE.md` or `FAILED.md`: completion marker.
 - `localization-work/batches/status.json`: translation batch status.
+- `localization-work/batches/queue-report.json` and `.md`: next batches and retry queue state.
+- `localization-work/version-update-report.json` and `.md`: adaptive update counts for new, changed, moved, removed, and still-untranslated candidates.
 
 Check progress without interrupting the agent:
 
 ```bash
 python scripts/localization_status.py --work-dir localization-work
+python scripts/localization_status.py --work-dir localization-work --watch 30
 ```
 
 Do not read or delegate the full `translation-request.json` when it has more than 100 items. Use the generated `localization-work/batches/batch-XXX.request.json` files. Default batches are capped at 40 items and approximately 12k JSON characters to avoid model output truncation.
+
+After any batch result appears, run the queue manager:
+
+```bash
+python scripts/manage_translation_batches.py \
+  --batches-dir localization-work/batches \
+  --retry-failed \
+  --next 3 \
+  --out localization-work/batches/queue-report.json \
+  --markdown localization-work/batches/queue-report.md
+```
+
+If a response is truncated, invalid JSON, missing ids, or fails placeholder checks, the queue manager marks the parent batch and creates smaller retry child batches such as `batch-000-r1-000`. Translate those retry batches before merging.
+
+Resume interrupted work without overwriting batches:
+
+```bash
+python scripts/run_localization_pipeline.py . \
+  --target-locale zh-CN \
+  --mode both \
+  --out-dir localization-work \
+  --resume
+```
 
 ## Adaptive Update Mode
 
@@ -98,6 +240,69 @@ python scripts/update_localization_baseline.py \
 ```
 
 Use the requested target language in `--language`.
+
+## Version Update Report
+
+Every pipeline run writes `localization-work/version-update-report.json` and `.md`. Use it to decide whether the current run is a first scan or an upstream-update pass.
+
+Key fields:
+
+- `mode`: `initial-scan` or `adaptive-update`.
+- `actionable_candidates`: total items to translate or review now.
+- `counts.new_candidates`: newly discovered user-visible strings.
+- `counts.changed_candidates`: existing locations whose source text changed.
+- `counts.moved_candidates`: known strings that moved location.
+- `counts.removed_candidates`: baseline strings no longer present.
+- `counts.still_untranslated`: previously pending/review items still present.
+
+For adaptive updates, translate `new_candidates`, `changed_candidates`, and `still_untranslated` first. Do not re-translate `moved_candidates`.
+
+## Local Skill Output Mode
+
+Use this mode when the user wants to localize other local skills' user-visible output text. Trigger examples:
+
+```text
+/技能语言
+/zero-zero-three-hermes-language-management skills 中文
+/技能语言 日文
+/skill-lang ko
+```
+
+Default target language is `zh-CN` Simplified Chinese. Default skill root is `~/.hermes/skills`, and the current language-management skill is excluded unless the user explicitly asks to include it.
+
+Scan and prepare translation work:
+
+```bash
+python scripts/run_local_skill_output_pipeline.py \
+  --skill-root ~/.hermes/skills \
+  --target-locale zh-CN \
+  --out-dir local-skill-language-work
+```
+
+The scanner targets output-facing skill surfaces:
+
+- `agents/openai.yaml` interface fields: `display_name`, `short_description`, `default_prompt`.
+- Text resources under `assets/`, `templates/`, and `examples/`.
+- Optional `references/` and `docs/` only when the user asks to include them.
+- `SKILL.md` frontmatter description only with explicit review mode.
+
+Do not translate `SKILL.md` instruction bodies by default. Those are model-facing operating instructions, not ordinary user output. If the user explicitly asks to translate instruction bodies, treat every item as high risk and preserve tool names, command syntax, file paths, and trigger phrases.
+
+After model translation batches are validated and merged, apply changes to the skill root:
+
+```bash
+python scripts/apply_translation_results.py \
+  --repo ~/.hermes/skills \
+  --request local-skill-language-work/translation-request.json \
+  --translations local-skill-language-work/merged-translation-results.json \
+  --out local-skill-language-work/apply-report.json \
+  --markdown local-skill-language-work/apply-report.md \
+  --rollback-patch local-skill-language-work/rollback.patch \
+  --apply \
+  --max-risk medium
+```
+
+Then run `/reload-skills` in Hermes so updated local skill metadata is visible.
 
 ## Hermes Workflow
 
@@ -263,6 +468,12 @@ python scripts/validate_translation_response.py \
   --fail-on errors
 ```
 
+Prefer the queue manager for normal runs because it performs this validation automatically and creates retry batches when needed:
+
+```bash
+python scripts/manage_translation_batches.py --batches-dir localization-work/batches --retry-failed --next 3
+```
+
 Merge completed batches:
 
 ```bash
@@ -272,6 +483,22 @@ python scripts/merge_translation_results.py \
   --require-validation \
   --update-status
 ```
+
+For a shortcut command or any request that says to apply changes directly, apply merged results to the repository after validation:
+
+```bash
+python scripts/apply_translation_results.py \
+  --repo . \
+  --request localization-work/translation-request.json \
+  --translations localization-work/merged-translation-results.json \
+  --out localization-work/apply-report.json \
+  --markdown localization-work/apply-report.md \
+  --rollback-patch localization-work/rollback.patch \
+  --apply \
+  --max-risk medium
+```
+
+Use `--max-risk high` only when explicitly requested. If a source string cannot be matched exactly or is ambiguous, leave it unchanged and report it instead of guessing.
 
 ## i18n Key Migration Mode
 
@@ -294,9 +521,26 @@ python scripts/generate_i18n_migration_plan.py \
 
 4. Inspect the repository for its existing i18n helper and locale-file layout.
 5. Add source and target locale entries before replacing runtime strings.
-6. Replace only approved `replace_with_i18n_key` items with the local helper pattern.
-7. Inspect `inspect_before_migration` items before editing; skip model-facing or ambiguous strings.
-8. Run Multilingual Consistency Mode and project validation.
+6. When translation results are validated and the repository already has an i18n helper, apply approved low/medium risk items with:
+
+```bash
+python scripts/apply_i18n_migration.py \
+  --repo . \
+  --plan localization-work/i18n-migration-plan.json \
+  --translations localization-work/merged-translation-results.json \
+  --locales-dir locales \
+  --source-locale en \
+  --target-locale zh-CN \
+  --out localization-work/i18n-apply-report.json \
+  --markdown localization-work/i18n-apply-report.md \
+  --rollback-patch localization-work/i18n-rollback.patch \
+  --apply \
+  --max-risk medium
+```
+
+7. Replace only approved `replace_with_i18n_key` items with the local helper pattern. The executor writes source and target locale values first, then replaces exact source text with helper calls such as `t("key")`.
+8. Inspect `inspect_before_migration`, high-risk, helper-missing, source-not-found, or missing-translation items before editing; skip model-facing or ambiguous strings.
+9. Run Multilingual Consistency Mode and project validation.
 
 Do not invent a new i18n runtime unless the user explicitly requests it. If no helper exists, report the required integration points and keep the migration plan as the handoff artifact.
 
@@ -317,6 +561,9 @@ At the end, summarize:
 
 - Target language.
 - Files changed by surface: CLI, gateway, TUI, Web, tools, docs/map.
+- Progress status from `localization_status.py`.
+- Version update counts from `version-update-report.md`.
+- Rollback patch path, usually `localization-work/rollback.patch`.
 - Validation commands and results.
 - Remaining English categories intentionally preserved.
 - Any low-confidence candidates left for review.
@@ -354,15 +601,22 @@ When updating an existing baseline, pass `--baseline localization-baseline.json`
 ## Resources
 
 - `scripts/scan_user_facing_text.py`: deterministic scanner for likely user-facing strings.
+- `scripts/resolve_shortcut_command.py`: deterministic parser for slash command arguments, target locale defaults, modes, and options.
 - `scripts/diff_localization_scan.py`: compares a fresh scan with a baseline and emits update-only deltas.
 - `scripts/generate_patch_plan.py`: creates a risk-ranked patch plan with preserve tokens, memory hits, and validation suggestions.
 - `scripts/generate_i18n_migration_plan.py`: converts scan, delta, or patch-plan artifacts into stable i18n key migration work items.
+- `scripts/apply_i18n_migration.py`: applies approved i18n migration items to locale files and source helper calls, with rollback patch generation.
 - `scripts/export_translation_request.py`: exports patch or migration plans as model-facing translation batches.
 - `scripts/run_localization_pipeline.py`: runs the scan, delta, plan, migration, translation-request, consistency, and summary artifact pipeline.
+- `scripts/scan_local_skill_outputs.py`: scans local skill output-facing metadata and resource text.
+- `scripts/run_local_skill_output_pipeline.py`: creates translation requests and batches for local skill output localization.
 - `scripts/split_translation_request.py`: splits large translation requests into resumable small batch files.
-- `scripts/localization_status.py`: prints pipeline and translation batch progress.
+- `scripts/manage_translation_batches.py`: validates available batch results, tracks queue progress, selects next batches, and creates smaller retry batches after failed or truncated responses.
+- `scripts/localization_status.py`: prints pipeline, version-update, batch, apply, and rollback progress; supports `--watch`.
 - `scripts/validate_translation_response.py`: validates batch translations for JSON shape, missing ids, placeholders, and preserve tokens.
 - `scripts/merge_translation_results.py`: merges validated batch results into one translation result artifact.
+- `scripts/apply_translation_results.py`: applies validated translation results to source files by exact source-text replacement, generates rollback patches, and reports skipped unsafe or ambiguous items.
+- `scripts/install_hermes_language_aliases.py`: installs `/语言`, `/lang`, `/hermes-lang`, `/hermes-language`, `/技能语言`, `/skill-lang`, `/skills-lang`, and `/skill-language` quick-command aliases for local Hermes.
 - `scripts/check_i18n_consistency.py`: checks locale files for missing keys, extra keys, placeholder mismatches, empty values, and likely untranslated text.
 - `scripts/apply_locale_consistency_fixes.py`: plans or applies deterministic locale missing-key and empty-value fixes.
 - `scripts/update_localization_baseline.py`: creates or refreshes a stable localization baseline.
