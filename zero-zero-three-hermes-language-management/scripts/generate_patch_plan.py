@@ -27,6 +27,12 @@ BACKTICK_RE = re.compile(r"`([^`]+)`")
 CONFIG_KEY_RE = re.compile(r"\b[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+\b")
 MODEL_PROVIDER_RE = re.compile(r"\b[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.:-]+\b|\b[a-zA-Z0-9_.-]+:[a-zA-Z0-9_.:-]+\b")
 TECH_LABEL_RE = re.compile(r"\b(?:[A-Za-z][A-Za-z0-9_.-]*\s+){0,3}(?:ID|URL|API|SDK|CLI|OAuth|MCP|JSON|YAML|HTTP|HTTPS|SSE|SSH|STDIO|PID|TTL|DB|UI|TUI)\b")
+EXCEPTION_CLASS_RE = re.compile(r"\b[A-Z][A-Za-z0-9]*(?:Error|Exception|Timeout)\b")
+DURATION_RE = re.compile(r"\b\d+(?:\.\d+)?\s*(?:ms|s|sec|secs|second|seconds|m|min|mins|minute|minutes)\b", re.I)
+PROVIDER_NAME_RE = re.compile(
+    r"\b(?:nvidia|openai|anthropic|deepseek|gemini|google|azure|ollama|openrouter|groq|mistral|qwen|moonshot|siliconflow|together)\b",
+    re.I,
+)
 
 VALIDATION_BY_SURFACE = {
     "cli": ["python changed files: python3 -m py_compile"],
@@ -56,7 +62,19 @@ def text_hash(text: str) -> str:
 
 def extract_preserve_tokens(text: str) -> list[str]:
     tokens: list[str] = []
-    for regex in (PLACEHOLDER_RE, URL_RE, PATH_RE, ENV_RE, CONFIG_KEY_RE, MODEL_PROVIDER_RE, COMMAND_RE, TECH_LABEL_RE):
+    for regex in (
+        PLACEHOLDER_RE,
+        URL_RE,
+        PATH_RE,
+        ENV_RE,
+        CONFIG_KEY_RE,
+        MODEL_PROVIDER_RE,
+        COMMAND_RE,
+        TECH_LABEL_RE,
+        EXCEPTION_CLASS_RE,
+        DURATION_RE,
+        PROVIDER_NAME_RE,
+    ):
         for match in regex.finditer(text):
             value = match.group(0).strip()
             if value and value not in tokens:

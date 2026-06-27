@@ -7,6 +7,7 @@
 - Slash command descriptions shown to users.
 - Gateway/platform messages sent to Telegram, Discord, Matrix, WhatsApp, QQ, Slack, or web clients.
 - Error/warning text authored by Hermes.
+- Runtime status and retry messages authored by Hermes, including provider/API timeout notices such as `Transient {error} on {provider} - rebuilt client, waiting {seconds}s before one last primary attempt.`
 
 ## Preserve
 
@@ -17,7 +18,7 @@
 - Model/provider/tool/skill IDs: `qwen/qwen3`, `openai-codex`, `browser_click`, `github:create_issue`.
 - URLs, URI schemes, file paths, database paths, JSON keys, protocol values.
 - Package names, binary names, import names, class/function names.
-- External provider or subprocess output.
+- External provider or subprocess output. If Hermes wraps that output in its own user-facing status message, translate the Hermes-authored prose and preserve provider names, exception class names, durations, paths, commands, and placeholders.
 - Tests and fixtures unless assertions deliberately cover user-visible localized copy.
 - Comments/docstrings unless they are displayed by argparse/help or generated docs.
 - `SKILL.md` instruction bodies and model-facing prompts unless documentation localization is explicitly requested.

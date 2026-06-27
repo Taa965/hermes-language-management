@@ -54,6 +54,28 @@ CALL_NAMES = {
     "add_parser",
     "add_argument",
 }
+RUNTIME_LABEL_WORDS = {
+    "alert",
+    "banner",
+    "caption",
+    "detail",
+    "error",
+    "failure",
+    "hint",
+    "message",
+    "notice",
+    "progress",
+    "reason",
+    "retry",
+    "status",
+    "subtitle",
+    "success",
+    "summary",
+    "title",
+    "toast",
+    "warning",
+}
+RUNTIME_CALL_WORDS = RUNTIME_LABEL_WORDS | {"notify", "warn"}
 
 HERMES_RUNTIME_SKIP_PREFIXES = (
     ".github/workflows/",
@@ -79,6 +101,12 @@ ENV_RE = re.compile(r"\b[A-Z][A-Z0-9_]{2,}\b")
 PLACEHOLDER_RE = re.compile(r"(\{[^{}]+\}|%\([^)]+\)s|%s|\$\{[^}]+\}|\$[A-Za-z_][A-Za-z0-9_]*)")
 COMMAND_RE = re.compile(r"(^|\s)(hermes|npm|python|pip|git|uv|systemctl|journalctl|launchctl|sudo|npx|node)\s+")
 IDENTIFIER_HEAVY_RE = re.compile(r"^[A-Za-z0-9_./:-]+$")
+EXCEPTION_CLASS_RE = re.compile(r"\b[A-Z][A-Za-z0-9]*(?:Error|Exception|Timeout)\b")
+DURATION_RE = re.compile(r"\b\d+(?:\.\d+)?\s*(?:ms|s|sec|secs|second|seconds|m|min|mins|minute|minutes)\b", re.I)
+PROVIDER_NAME_RE = re.compile(
+    r"\b(?:nvidia|openai|anthropic|deepseek|gemini|google|azure|ollama|openrouter|groq|mistral|qwen|moonshot|siliconflow|together)\b",
+    re.I,
+)
 
 
 @dataclass
@@ -130,6 +158,12 @@ def classify(text: str, path: Path, generated: bool) -> tuple[str, str]:
         protected.append("placeholder")
     if COMMAND_RE.search(stripped):
         protected.append("command")
+    if EXCEPTION_CLASS_RE.search(stripped):
+        protected.append("exception-class")
+    if DURATION_RE.search(stripped):
+        protected.append("duration")
+    if PROVIDER_NAME_RE.search(stripped):
+        protected.append("provider")
     if protected:
         return "mixed-preserve", "contains " + ", ".join(protected)
     if len(stripped.split()) <= 2 and re.search(r"[_./:-]", stripped):
@@ -208,6 +242,40 @@ def call_name(node: ast.AST) -> str:
     return ""
 
 
+def label_text(node: ast.AST) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        parent = label_text(node.value)
+        return f"{parent}.{node.attr}" if parent else node.attr
+    if isinstance(node, ast.Subscript):
+        return label_text(node.value)
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return ""
+
+
+def is_runtime_label(label: str) -> bool:
+    label = str(label or "").strip()
+    if not label:
+        return False
+    lower = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", label).lower()
+    words = set(re.split(r"[^a-z0-9]+", lower))
+    return bool(words & RUNTIME_LABEL_WORDS)
+
+
+def is_runtime_call(name: str) -> bool:
+    lower = str(name or "").lower()
+    if not lower:
+        return False
+    if name in CALL_NAMES or name.endswith(".print") or name.endswith(".ask"):
+        return True
+    if name.endswith(("Error", "Exception")):
+        return True
+    words = set(re.split(r"[^a-z0-9]+", lower))
+    return bool(words & RUNTIME_CALL_WORDS)
+
+
 def py_string_value(node: ast.AST) -> str | None:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
@@ -224,7 +292,19 @@ def py_string_value(node: ast.AST) -> str | None:
 
 def scan_python(path: Path, rel: str, text: str, generated: bool) -> list[Candidate]:
     candidates: list[Candidate] = []
+    seen: set[tuple[int, str, str, str]] = set()
     surface = surface_for(rel)
+
+    def add_candidate(line: int, kind: str, label: str, value: str) -> None:
+        cls, reason = classify(value, path, generated)
+        if cls.startswith("skip") and cls != "skip-generated":
+            return
+        key = (line, kind, label, value)
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(Candidate(rel, line, surface, kind, label, value, cls, reason))
+
     try:
         tree = ast.parse(text)
     except SyntaxError:
@@ -232,17 +312,38 @@ def scan_python(path: Path, rel: str, text: str, generated: bool) -> list[Candid
     for node in ast.walk(tree):
         if isinstance(node, ast.Call):
             name = call_name(node.func)
-            interesting = name in CALL_NAMES or name.endswith(".print") or name.endswith(".ask")
+            interesting = is_runtime_call(name)
             if not interesting:
-                continue
-            for arg in list(node.args) + [kw.value for kw in node.keywords if kw.arg in {"help", "description", "title"}]:
+                keyword_values = [kw.value for kw in node.keywords if kw.arg and is_runtime_label(kw.arg)]
+                positional_values: list[ast.AST] = []
+            else:
+                keyword_values = [kw.value for kw in node.keywords if kw.arg in {"help", "description", "title"} or is_runtime_label(kw.arg or "")]
+                positional_values = list(node.args)
+            for arg in positional_values + keyword_values:
                 value = py_string_value(arg)
                 if value is None:
                     continue
-                cls, reason = classify(value, path, generated)
-                if cls.startswith("skip") and cls != "skip-generated":
+                add_candidate(getattr(node, "lineno", 1), "python-call", name, value)
+        elif isinstance(node, ast.Assign):
+            labels = [label_text(target) for target in node.targets]
+            if any(is_runtime_label(label) for label in labels):
+                value = py_string_value(node.value)
+                if value is not None:
+                    add_candidate(getattr(node, "lineno", 1), "python-assignment", ",".join(label for label in labels if label), value)
+        elif isinstance(node, ast.AnnAssign):
+            label = label_text(node.target)
+            if is_runtime_label(label):
+                value = py_string_value(node.value) if node.value is not None else None
+                if value is not None:
+                    add_candidate(getattr(node, "lineno", 1), "python-assignment", label, value)
+        elif isinstance(node, ast.Dict):
+            for key_node, value_node in zip(node.keys, node.values):
+                label = label_text(key_node) if key_node is not None else ""
+                if not is_runtime_label(label):
                     continue
-                candidates.append(Candidate(rel, getattr(node, "lineno", 1), surface, "python-call", name, value, cls, reason))
+                value = py_string_value(value_node)
+                if value is not None:
+                    add_candidate(getattr(node, "lineno", 1), "python-dict-value", label, value)
     return candidates
 
 

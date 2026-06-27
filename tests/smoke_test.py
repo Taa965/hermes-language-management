@@ -198,6 +198,15 @@ def main() -> int:
         )
         candidates = load_json(scan)
         assert candidates, "scanner should find fixture candidates"
+        retry_candidates = [
+            item
+            for item in candidates
+            if "Transient {expr} on {expr}" in item.get("text", "")
+            and "one last primary attempt" in item.get("text", "")
+        ]
+        assert retry_candidates, "scanner should catch Hermes-authored runtime retry/status messages"
+        assert retry_candidates[0]["classification"] == "mixed-preserve"
+        assert retry_candidates[0]["kind"] == "python-assignment"
 
         run(
             [
@@ -233,7 +242,17 @@ def main() -> int:
                 "--include-review",
             ]
         )
-        assert load_json(patch_plan)["items"], "patch plan should contain items"
+        patch_items = load_json(patch_plan)["items"]
+        assert patch_items, "patch plan should contain items"
+        retry_plan_items = [
+            item
+            for item in patch_items
+            if "Transient {expr} on {expr}" in item.get("source_text", "")
+            and "one last primary attempt" in item.get("source_text", "")
+        ]
+        assert retry_plan_items, "patch plan should include runtime retry/status message"
+        assert "{expr}" in retry_plan_items[0]["preserve_tokens"]
+        assert retry_plan_items[0]["risk"] == "medium"
 
         run(
             [

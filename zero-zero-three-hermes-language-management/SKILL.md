@@ -334,9 +334,10 @@ If tests assert old English copy, do not blindly update all tests. Update only t
 ## Translation Rules
 
 - Translate UI labels, buttons, dialogs, toasts, headings, status text, warnings, errors, empty states, help text, CLI prompts, and gateway messages sent to users.
+- Translate Hermes-authored runtime status and retry messages, including provider/API timeout notices such as `Transient {error} on {provider} - rebuilt client, waiting {seconds}s before one last primary attempt.` Preserve the exception class, provider name, duration, and placeholders.
 - Keep placeholders intact: `{name}`, `{count}`, `%s`, `$VAR`, `${value}`, `{0}`, `<path>`.
 - Keep command examples executable.
-- Do not translate external provider output or subprocess stdout/stderr unless Hermes itself authored that text.
+- Do not translate raw external provider output or subprocess stdout/stderr unless Hermes itself authored or wrapped that text for display.
 - Do not translate `SKILL.md` bodies used as model instructions unless the user explicitly asks to localize documentation rather than runtime UI.
 - Prefer source-level changes. Avoid patching `dist`, `build`, `web_dist`, or generated assets unless the repo's build process regenerates them.
 
